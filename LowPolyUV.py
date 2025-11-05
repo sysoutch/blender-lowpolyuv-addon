@@ -109,88 +109,97 @@ def kmeans_colors_balanced(colors, k, max_iters=20, merge_threshold=0.02):
 # ------------------------------
 # Sample face colors function
 # ------------------------------
-def sample_face_colors_safe(obj, max_colors=16, downscale_max=512, use_downscale=True):
-    """Sample face colors safely: center pixel, fallback to small average if needed."""
+def sample_face_colors_safe_multimat(obj, max_colors=16, downscale_max=512, use_downscale=True):
+    """Sample face colors safely for all selected faces, respecting multiple materials."""
     bm = bmesh.from_edit_mesh(obj.data)
     uv_layer = bm.loops.layers.uv.active
-    mat = obj.active_material
-    if not mat:
+    if not uv_layer:
+        print("No UV layer found")
         return [], None
-
-    # Find image texture node
-    image = None
-    for node in mat.node_tree.nodes:
-        if node.type == 'TEX_IMAGE' and node.image:
-            image = node.image
-            break
-    if not image:
-        print("⚠️ No texture image found in material.")
-        return [], None
-
-    # Downscale if requested
-    if use_downscale:
-        width, height = image.size
-        scale = min(1.0, downscale_max / max(width, height))
-        if scale < 1.0:
-            tmp = bpy.data.images.new(
-                name=f"{image.name}_scaled_tmp",
-                width=width, height=height, alpha=True
-            )
-            tmp.pixels.foreach_set(image.pixels[:])
-            tmp.scale(max(1, int(width*scale)), max(1, int(height*scale)))
-            pixels = list(tmp.pixels)
-            w, h = tmp.size
-            scaled_img = tmp
-        else:
-            pixels = list(image.pixels)
-            w, h = image.size
-            scaled_img = None
-    else:
-        pixels = list(image.pixels)
-        w, h = image.size
-        scaled_img = None
 
     face_colors = []
+
+    # Cache downscaled images per material to avoid resampling repeatedly
+    material_images = {}
 
     for face in bm.faces:
         if not face.select:
             continue
 
-        uvs = [l[uv_layer].uv.copy() for l in face.loops]
-        if not uvs:
+        mat_idx = face.material_index
+        if mat_idx >= len(obj.material_slots):
+            continue
+        mat = obj.material_slots[mat_idx].material
+        if not mat or not mat.node_tree:
             continue
 
-        # Compute UV center
+        # Find image texture node
+        image = None
+        if mat.name in material_images:
+            image = material_images[mat.name]
+        else:
+            for node in mat.node_tree.nodes:
+                if node.type == 'TEX_IMAGE' and node.image:
+                    image = node.image
+                    break
+            if image:
+                # Optional downscale
+                if use_downscale:
+                    width, height = image.size
+                    scale = min(1.0, downscale_max / max(width, height))
+                    if scale < 1.0:
+                        tmp = bpy.data.images.new(
+                            name=f"{image.name}_scaled_tmp",
+                            width=width, height=height, alpha=True
+                        )
+                        tmp.pixels.foreach_set(image.pixels[:])
+                        tmp.scale(max(1, int(width*scale)), max(1, int(height*scale)))
+                        image_to_use = tmp
+                    else:
+                        image_to_use = image
+                else:
+                    image_to_use = image
+                material_images[mat.name] = image_to_use
+            else:
+                continue  # skip face if no texture
+
+        w, h = image_to_use.size
+        pixels = list(image_to_use.pixels)
+
+        # Sample UV center
+        uvs = [l[uv_layer].uv.copy() for l in face.loops]
         center = sum(uvs, Vector((0, 0))) / len(uvs)
         center.x = max(0.0, min(1.0, center.x))
         center.y = max(0.0, min(1.0, center.y))
 
         px = int(center.x * (w - 1))
         py = int(center.y * (h - 1))
-
-        # Clamp and index
         idx = (py * w + px) * 4
         idx = max(0, min(idx, len(pixels) - 4))
         color = pixels[idx:idx + 4]
 
-        # Fallback: if very dark or transparent, average a 3x3 neighborhood
+        # Fallback averaging if very dark or transparent
         if sum(color[:3]) < 0.01 or color[3] < 0.01:
             r, g, b, a = 0, 0, 0, 0
             count = 0
             for dx in (-1,0,1):
                 for dy in (-1,0,1):
-                    nx = max(0, min(px+dx, w-1))
-                    ny = max(0, min(py+dy, h-1))
+                    nx = max(0, min(px + dx, w - 1))
+                    ny = max(0, min(py + dy, h - 1))
                     nidx = (ny * w + nx) * 4
-                    c = pixels[nidx:nidx+4]
+                    c = pixels[nidx:nidx + 4]
                     r += c[0]; g += c[1]; b += c[2]; a += c[3]
                     count += 1
             color = [r/count, g/count, b/count, a/count]
 
         face_colors.append(color)
 
+    if not face_colors:
+        print("No face colors found.")
+        return [], None
+
     clustered_colors = kmeans_colors_balanced(face_colors, max_colors)
-    return clustered_colors, scaled_img
+    return clustered_colors, None  # scaled images are per-material now, can remove later
 
 # ------------------------------
 # Create palette function
@@ -240,12 +249,12 @@ class PaletteCache:
         return best_idx
 
 
-# ------------------------------
-# Snap faces to palette using cache
-# ------------------------------
-
-def snap_faces_to_palette_cached(obj, max_colors=16, block_size=8, use_downscale=True, downscale_max=512):
-    """Snap faces to palette using safe center-pixel sampling."""
+def snap_faces_to_palette(obj, max_colors=16, block_size=8, use_downscale=True, downscale_max=512):
+    """
+    Snap selected faces to a clustered palette.
+    Fast path for single material + single texture.
+    Supports multi-material too.
+    """
     if obj.type != 'MESH':
         print("Select a mesh object!")
         return
@@ -256,33 +265,166 @@ def snap_faces_to_palette_cached(obj, max_colors=16, block_size=8, use_downscale
     uv_layer = bm.loops.layers.uv.active
     if not uv_layer:
         print("No UV layer found")
+        bpy.ops.object.mode_set(mode=prev_mode)
         return
 
-    face_colors, scaled_img = sample_face_colors_safe(
+    # --------------------------
+    # Detect single-material fast path
+    # --------------------------
+    if len(obj.material_slots) == 1:
+        mat = obj.material_slots[0].material
+        image = None
+        if mat and mat.node_tree:
+            for node in mat.node_tree.nodes:
+                if node.type == 'TEX_IMAGE' and node.image:
+                    image = node.image
+                    break
+        if image:
+            # Single material + texture path
+            width, height = image.size
+            scale = 1.0
+            if use_downscale and max(width, height) > downscale_max:
+                scale = downscale_max / max(width, height)
+                tmp_img = bpy.data.images.new(
+                    name=f"{image.name}_tmp",
+                    width=width, height=height, alpha=True
+                )
+                tmp_img.pixels.foreach_set(image.pixels[:])
+                tmp_img.scale(max(1, int(width*scale)), max(1, int(height*scale)))
+                image = tmp_img
+                width, height = image.size
+
+            pixels = list(image.pixels)
+            face_colors = []
+            face_map = {}
+
+            for face in bm.faces:
+                if not face.select:
+                    continue
+                uvs = [l[uv_layer].uv.copy() for l in face.loops]
+                center = sum(uvs, Vector((0,0))) / len(uvs)
+                center.x = max(0.0, min(1.0, center.x))
+                center.y = max(0.0, min(1.0, center.y))
+
+                px = int(center.x * (width-1))
+                py = int(center.y * (height-1))
+                idx = (py * width + px) * 4
+                idx = max(0, min(idx, len(pixels)-4))
+                color = pixels[idx:idx+4]
+
+                # Fallback averaging if very dark or transparent
+                if sum(color[:3]) < 0.01 or color[3] < 0.01:
+                    r=g=b=a=0
+                    count=0
+                    for dx in (-1,0,1):
+                        for dy in (-1,0,1):
+                            nx = max(0, min(px+dx, width-1))
+                            ny = max(0, min(py+dy, height-1))
+                            nidx = (ny * width + nx) * 4
+                            c = pixels[nidx:nidx+4]
+                            r+=c[0]; g+=c[1]; b+=c[2]; a+=c[3]; count+=1
+                    color=[r/count, g/count, b/count, a/count]
+
+                face_colors.append(color)
+                face_map[face] = color
+
+            clustered_colors = kmeans_colors_balanced(face_colors, max_colors)
+            palette_img, grid_size = create_square_palette(clustered_colors, name="PaletteTexture", block_size=block_size)
+            palette_cache = PaletteCache(clustered_colors, grid_size)
+
+            # Snap UVs
+            for face, color in face_map.items():
+                idx = palette_cache.closest_color_index(color)
+                target_uv = palette_cache.positions[idx]
+                for l in face.loops:
+                    l[uv_layer].uv = target_uv.copy()
+
+            bmesh.update_edit_mesh(obj.data)
+            bpy.ops.object.mode_set(mode=prev_mode)
+            obj.data.update()
+            print("✅ Faces snapped (single-material fast path).")
+            return
+
+def snap_faces_to_palette_multimat(
+    obj, max_colors=16, block_size=8, use_downscale=True, downscale_max=512
+):
+    """Snap selected faces to a clustered palette, respecting multiple materials."""
+    if obj.type != 'MESH':
+        print("Select a mesh object!")
+        return
+
+    prev_mode = obj.mode
+    bpy.ops.object.mode_set(mode='EDIT')
+    bm = bmesh.from_edit_mesh(obj.data)
+    uv_layer = bm.loops.layers.uv.active
+    if not uv_layer:
+        print("No UV layer found")
+        bpy.ops.object.mode_set(mode=prev_mode)
+        return
+
+    # Sample face colors (multi-material safe)
+    face_colors, _ = sample_face_colors_safe_multimat(
         obj, max_colors=max_colors, downscale_max=downscale_max, use_downscale=use_downscale
     )
     if not face_colors:
-        print("No colors found or texture missing.")
+        print("No face colors found or textures missing.")
+        bpy.ops.object.mode_set(mode=prev_mode)
         return
 
+    # Create clustered palette
     palette_img, grid_size = create_square_palette(face_colors, block_size=block_size)
     palette_cache = PaletteCache(face_colors, grid_size)
 
-    # Determine image to read pixels
-    image = scaled_img or obj.active_material.node_tree.nodes.get('Image Texture').image
-    if not image:
-        print("No image found for sampling colors.")
-        return
+    # Prepare material-to-image mapping (downscaled if requested)
+    material_images = {}
+    for slot in obj.material_slots:
+        mat = slot.material
+        if not mat or not mat.node_tree:
+            continue
+        image = None
+        for node in mat.node_tree.nodes:
+            if node.type == 'TEX_IMAGE' and node.image:
+                image = node.image
+                break
+        if not image:
+            continue
+        # Downscale
+        if use_downscale:
+            width, height = image.size
+            scale = min(1.0, downscale_max / max(width, height))
+            if scale < 1.0:
+                tmp = bpy.data.images.new(
+                    name=f"{image.name}_scaled_tmp",
+                    width=width, height=height,
+                    alpha=True
+                )
+                tmp.pixels.foreach_set(image.pixels[:])
+                tmp.scale(max(1, int(width*scale)), max(1, int(height*scale)))
+                material_images[mat.name] = tmp
+            else:
+                material_images[mat.name] = image
+        else:
+            material_images[mat.name] = image
 
-    pixels = list(image.pixels)
-    w, h = image.size
-
+    # Snap faces
     for face in bm.faces:
         if not face.select:
             continue
 
+        mat_idx = face.material_index
+        if mat_idx >= len(obj.material_slots):
+            continue
+        mat = obj.material_slots[mat_idx].material
+        if not mat or mat.name not in material_images:
+            continue
+
+        image = material_images[mat.name]
+        pixels = list(image.pixels)
+        w, h = image.size
+
+        # Sample UV center
         uvs = [l[uv_layer].uv.copy() for l in face.loops]
-        center = sum(uvs, Vector((0,0))) / len(uvs)
+        center = sum(uvs, Vector((0, 0))) / len(uvs)
         center.x = max(0.0, min(1.0, center.x))
         center.y = max(0.0, min(1.0, center.y))
 
@@ -292,7 +434,7 @@ def snap_faces_to_palette_cached(obj, max_colors=16, block_size=8, use_downscale
         idx = max(0, min(idx, len(pixels)-4))
         face_color = pixels[idx:idx+4]
 
-        # Fallback averaging if dark/transparent
+        # Fallback averaging for very dark/transparent pixels
         if sum(face_color[:3]) < 0.01 or face_color[3] < 0.01:
             r, g, b, a = 0, 0, 0, 0
             count = 0
@@ -306,20 +448,22 @@ def snap_faces_to_palette_cached(obj, max_colors=16, block_size=8, use_downscale
                     count += 1
             face_color = [r/count, g/count, b/count, a/count]
 
+        # Snap to palette
         palette_idx = palette_cache.closest_color_index(face_color)
         target_uv = palette_cache.positions[palette_idx]
 
         for l in face.loops:
             l[uv_layer].uv = target_uv.copy()
 
+    # Cleanup
+    for img in material_images.values():
+        if img.name.endswith("_scaled_tmp"):
+            bpy.data.images.remove(img, do_unlink=True)
+
     bmesh.update_edit_mesh(obj.data)
     bpy.ops.object.mode_set(mode=prev_mode)
     obj.data.update()
-
-    if scaled_img:
-        bpy.data.images.remove(scaled_img, do_unlink=True)
-
-    print(f"✅ Faces snapped to clustered palette (safe center sampling).")
+    print(f"✅ Faces snapped to clustered palette (multi-material safe).")
 
 # ------------------------------
 # Blender Operator
@@ -371,7 +515,6 @@ class UV_OT_ScaleAndSnapPalette(bpy.types.Operator):
         layout.prop(self, "max_colors")
         layout.prop(self, "block_size")
         layout.prop(self, "use_downscale")
-        # Show downscale slider only if checkbox is on
         if self.use_downscale:
             layout.prop(self, "downscale_max")
 
@@ -381,17 +524,21 @@ class UV_OT_ScaleAndSnapPalette(bpy.types.Operator):
             self.report({'ERROR'}, "Select a mesh object!")
             return {'CANCELLED'}
 
+        # 1️⃣ Scale UVs toward center
         scale_faces_to_center(self.scale_factor)
-        snap_faces_to_palette_cached(
+
+        # 2️⃣ Smart snapping to clustered palette (fast path if single material)
+        snap_faces_to_palette(
             obj,
             max_colors=self.max_colors,
             block_size=self.block_size,
             use_downscale=self.use_downscale,
             downscale_max=self.downscale_max
         )
+
         self.report(
             {'INFO'},
-            f"✅ UVs scaled and snapped ({'downscaled' if self.use_downscale else 'full-res'})"
+            f"✅ UVs scaled and snapped ({'single-material fast path' if len(obj.material_slots)==1 else 'multi-material'})"
         )
         return {'FINISHED'}
 

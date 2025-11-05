@@ -28,7 +28,8 @@ This addon is designed for artists who want to simplify texture colors and align
 
 **More:**
 
-![W.W.](ww_screen.png)
+![W.W.](https://github.com/sysoutch/blender-lowpolyuv-addon/blob/main/ww_screen.png)
+![Bogdan](https://github.com/sysoutch/blender-lowpolyuv-addon/blob/main/bogdan_screen.png)
 
 ## Installation
 
