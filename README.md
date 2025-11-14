@@ -37,15 +37,15 @@ A Blender addon that scales UV islands and snaps face colors to a clustered pale
 1. Go to the **UV Editor** tab
 2. Select a mesh object with UVs and an image texture.
 3. Enter Edit Mode and select the faces you want to process.
-3. In the **UV** menu, select **LowPolyUV**
-4. Adjust the parameters in the popup dialog:
+4. In the **UV** menu, select **LowPolyUV**
+5. Adjust the parameters in the popup dialog:
    - **UV Island Scale**: How much to scale each UV island toward its center (0.0 to 1.0)
    - **Max Colors**: Maximum number of colors in the palette (1-256)
    - **Block Size**: Size of each color block in pixels (1-64)
+   - **Metallic**: Enable metallic shader (ON/OFF)
+   - **Flat Shading**: Enable flat shading (ON/OFF)
    - **Use Downscaled Image**: Use a scaled-down copy of textures for faster sampling
    - **Downscale Max Size**: Maximum resolution for downscaled images (64-4096)
-   - **Fallback to Material Color**: Use material color when no texture is found
-   - **Only Use Material Color**: Use only material colors, ignore textures
 
 ## Parameters Explained
 
@@ -58,11 +58,17 @@ Determines the maximum number of colors in the resulting palette. The algorithm 
 ### Block Size
 Sets the pixel size of each color block in the generated palette texture.
 
-### Fallback to Material Color
-When enabled, this will use material colors when textures are missing or when texture sampling fails.
+### Metallic
+Enables or disables the metallic shader property for the generated material.
 
-### Only Use Material Color
-When enabled, this will ignore all textures and use only the material colors for color clustering and palette generation.
+### Flat Shading
+Enables or disables flat shading for the generated material.
+
+### Use Downscaled Image
+When enabled, uses a scaled-down copy of textures for faster color sampling, especially useful for high-resolution textures.
+
+### Downscale Max Size
+Sets the maximum resolution (in pixels) for downscaled images when the "Use Downscaled Image" option is enabled.
 
 ## Technical Details
 
