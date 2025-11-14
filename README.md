@@ -32,7 +32,7 @@ A Blender addon that scales UV islands and snaps face colors to a clustered pale
 
 ## Usage
 
-![Downscaled Texture](screenshots/lowpolyuv_screen.png)
+![LowPolyUV](screenshots/lowpolyuv_screen.png)
 
 1. Go to the **UV Editor** tab
 2. Select a mesh object with UVs and an image texture.
@@ -46,6 +46,8 @@ A Blender addon that scales UV islands and snaps face colors to a clustered pale
    - **Flat Shading**: Enable flat shading (ON/OFF)
    - **Use Downscaled Image**: Use a scaled-down copy of textures for faster sampling
    - **Downscale Max Size**: Maximum resolution for downscaled images (64-4096)
+
+![LowPolyUVOperator](screenshots/lowpolyuv_operator_screen.png)
 
 ## Parameters Explained
 
