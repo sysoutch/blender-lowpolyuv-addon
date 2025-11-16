@@ -320,7 +320,7 @@ def snap_faces_to_palette(obj, max_colors=16, block_size=8):
                 face_map[face] = color
 
             clustered_colors = kmeans_colors_balanced(face_colors, max_colors)
-            palette_img, grid_size = create_square_palette(clustered_colors, name="PaletteTexture", block_size=block_size)
+            palette_img, grid_size = create_square_palette(clustered_colors, name=obj.name+"_PaletteTexture", block_size=block_size)
             palette_cache = PaletteCache(clustered_colors, grid_size)
 
             for face, color in face_map.items():
@@ -367,7 +367,7 @@ def snap_faces_to_palette_multimat(obj, max_colors=16, block_size=8):
         return
 
     # Create clustered palette
-    palette_img, grid_size = create_square_palette(face_colors, name="PaletteTexture", block_size=block_size)
+    palette_img, grid_size = create_square_palette(face_colors, name=obj.name+"_PaletteTexture", block_size=block_size)
     print(f"Palette image created: {palette_img.name}, size: {palette_img.size}")
 
     # Create palette cache
@@ -481,8 +481,8 @@ def create_square_palette(colors, name="PaletteTexture", block_size=8):
     for y in range(height):
         for x in range(width):
             # Calculate which color block this pixel belongs to
-            block_y = y
-            block_x = x
+            block_y = y // block_size
+            block_x = x // block_size
             
             if block_y < grid_size and block_x < grid_size:
                 color_idx = block_y * grid_size + block_x
